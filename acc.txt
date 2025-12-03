@@ -1,0 +1,2 @@
+Null Accuracy = 0.1792 
+XGBoost Accuracy = 0.5643 

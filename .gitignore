@@ -1,0 +1,16 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*_cache/
+*_files/
+.vscode/
+.idea/
+Rplots.pdf
+DOHMH_New_York_City_Restaurant_Inspection_Results.csv
+*.rds
+name_embeddings*.csv
+train_dat.csv
+test_dat.csv
+xgb_prediction_results.csv
+*.log

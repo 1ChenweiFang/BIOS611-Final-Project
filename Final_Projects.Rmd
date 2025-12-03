@@ -1,0 +1,410 @@
+---
+title: "Final Project"
+author: "Chenwei Fang"
+date: "2025-11-14"
+output: html_document
+---
+```{r}
+library(xgboost)
+library(glmnet)
+library(stringr)
+library(tibble)
+library(caret)
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library("randomForest")
+```
+
+```{r}
+library(dplyr)
+library(readr)
+
+restaurants <- read_csv("DOHMH_New_York_City_Restaurant_Inspection_Results.csv",
+                        col_types = cols(CAMIS = col_character()))
+
+emb <- read_csv("name_embeddings_unique_camis.csv",
+                   col_types = cols(CAMIS = col_character()))
+restaurants$`CUISINE DESCRIPTION`
+```
+Description of the dataset
+1): This dataset talks about the Inspection of the resturants in NYC
+2): It contains 292k rows and 27 columns. From this results, we care more about these variables: CAMIS(Identifier of the entity); DBA(Name of the restaurants); BORO(BOROS in NYC); CUISINI DESCRIPTION(as descirbed); VIOLATION DESCRIPTION(as described); INSPECTION DATE(as described)
+3);In this project, we are going to analysis the trend of the restaurants type, use language model and classification to understand how the violation occurs.
+```{r}
+colnames(resturants)
+```
+
+
+
+1): We filter the first labeled data and see the trend of the data opened also parse the date.
+```{r}
+library(dplyr)
+library(lubridate)
+
+cleaned <- restaurants %>%
+  filter(!is.na(`CUISINE DESCRIPTION`)) %>%
+  mutate(`INSPECTION DATE` = mdy(`INSPECTION DATE`))
+
+open_df <- cleaned %>%
+  group_by(CAMIS) %>%
+  summarise(
+    Cuisine = first(`CUISINE DESCRIPTION`),
+    First_Inspection = min(`INSPECTION DATE`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Open_Month = floor_date(First_Inspection, unit = "month") 
+  ) %>%
+  filter(Open_Month >= ymd("2000-01-01"))   
+
+trend_df <- open_df %>%
+  group_by(Open_Month, Cuisine) %>%
+  summarise(New_Count = n(), .groups = "drop")
+
+top10 <- trend_df %>%
+  group_by(Cuisine) %>%
+  summarise(total = sum(New_Count), .groups = "drop") %>%
+  slice_max(total, n = 10) %>%
+  pull(Cuisine)
+
+trend_df2 <- trend_df %>%
+  mutate(Cuisine2 = if_else(Cuisine %in% top10, Cuisine, "Other")) %>%
+  group_by(Open_Month, Cuisine2) %>%
+  summarise(New_Count = sum(New_Count), .groups = "drop")
+
+```
+2): Then we see the trend for type of the restaurants being opened, we expand the 
+```{r}
+
+ggplot(trend_df2,
+       aes(x = Open_Month, y = New_Count, color = Cuisine2)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Trend of Detected Restaurants by Cuisine (Monthly, NYC)",
+    x = "Month",
+    y = "Number of Opened Restaurants",
+    color = "Cuisine"
+  ) +
+  theme_minimal()
+
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+
+cuisine_viol <- restaurants %>%
+  filter(!is.na(`CUISINE DESCRIPTION`)) %>%
+  group_by(`CUISINE DESCRIPTION`) %>%
+  summarise(
+    n_viol = n(),
+    n_restaurants = n_distinct(CAMIS),
+    avg_viol_per_rest = n_viol / n_restaurants,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_viol_per_rest)) %>%
+  dplyr::slice(1:15)
+
+ggplot(cuisine_viol,
+       aes(x = reorder(`CUISINE DESCRIPTION`, avg_viol_per_rest),
+           y = avg_viol_per_rest)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 15 Cuisine Types by Average Violations per Restaurant",
+    x = "Cuisine Type",
+    y = "Average Violations per Restaurant"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+boro_viol <- restaurants %>%
+  group_by(BORO) %>%
+  summarise(
+    n_viol        = n(),                  
+    n_restaurants = n_distinct(CAMIS),     
+    viol_per_rest = n_viol / n_restaurants,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(viol_per_rest))
+
+
+ggplot(boro_viol,
+       aes(x = reorder(BORO, viol_per_rest),
+           y = viol_per_rest)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Average Number of Violations per Restaurant by Borough",
+    x = "Borough",
+    y = "Average Violations per Restaurant"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(readr)
+library(forcats)
+library(xgboost)
+
+dat <- restaurants %>%
+  mutate(
+    CAMIS   = as.character(CAMIS),
+    cuisine = str_squish(str_to_lower(`CUISINE DESCRIPTION`)),
+    boro    = str_squish(str_to_lower(BORO)),
+    zipcode = as.character(ZIPCODE),
+    grade   = as.character(GRADE),
+    insptype = str_squish(str_to_lower(`INSPECTION TYPE`)),
+    lat     = as.numeric(Latitude),
+    lon     = as.numeric(Longitude)
+  ) %>%
+  distinct(CAMIS, .keep_all = TRUE) %>%   
+  inner_join(emb, by = "CAMIS") %>%      
+  filter(
+    !is.na(cuisine), cuisine != "",
+    !is.na(boro),    boro    != ""
+  )
+
+table_cuisine <- table(dat$cuisine)
+rare_class <- names(table_cuisine[table_cuisine < 5]) 
+
+dat2 <- dat %>%
+  filter(!cuisine %in% rare_class)
+
+cat("Lefted cuisine：", length(unique(dat2$cuisine)), "\n")
+cat("Sample Size：", nrow(dat2), "\n")
+
+top_zip <- names(
+  sort(table(dat2$zipcode), decreasing = TRUE)
+)[1:50]
+
+dat2 <- dat2 %>%
+  mutate(
+    zipcode_grp = if_else(zipcode %in% top_zip, zipcode, "other")
+  )
+
+top_insptype <- names(
+  sort(table(dat2$insptype), decreasing = TRUE)
+)[1:30]
+
+dat2 <- dat2 %>%
+  mutate(
+    insptype_grp = if_else(insptype %in% top_insptype, insptype, "other")
+  )
+
+dat2 <- dat2 %>%
+  mutate(
+    grade = fct_explicit_na(as.factor(grade), na_level = "missing")
+  )
+
+lat_mean <- mean(dat2$lat, na.rm = TRUE)
+lat_sd   <- sd(dat2$lat, na.rm = TRUE)
+lon_mean <- mean(dat2$lon, na.rm = TRUE)
+lon_sd   <- sd(dat2$lon, na.rm = TRUE)
+
+dat2 <- dat2 %>%
+  mutate(
+    lat_z = (lat - lat_mean) / lat_sd,
+    lon_z = (lon - lon_mean) / lon_sd,
+    lat_z = if_else(is.na(lat_z), 0, lat_z),
+    lon_z = if_else(is.na(lon_z), 0, lon_z)
+  )
+ 
+X_emb <- as.matrix(dat2 %>% select(starts_with("emb_")))
+
+feat_df <- dat2 %>%
+  transmute(
+    boro         = factor(boro),
+    zipcode      = factor(zipcode_grp),
+    grade        = grade,             
+    insptype     = factor(insptype_grp),
+    lat_z        = lat_z,
+    lon_z        = lon_z
+  )
+
+X_struct <- model.matrix(~ . - 1, data = feat_df) 
+
+X_all <- cbind(X_emb, X_struct)
+y_all <- factor(dat2$cuisine)
+label_levels <- levels(y_all)
+num_class <- length(label_levels)
+
+cat("dimension：", ncol(X_all), "\n")
+
+
+
+set.seed(123)
+n <- nrow(X_all)
+train_idx <- sample(n, size = 0.8 * n)
+
+X_train <- X_all[train_idx, , drop = FALSE]
+X_test  <- X_all[-train_idx, , drop = FALSE]
+
+y_train_fac <- y_all[train_idx]
+y_test_fac  <- y_all[-train_idx]
+
+# xgboost label: 0,1,...,K-1
+y_train_id <- as.integer(y_train_fac) - 1L
+y_test_id  <- as.integer(y_test_fac)  - 1L
+
+
+
+dtrain <- xgb.DMatrix(data = X_train, label = y_train_id)
+dtest  <- xgb.DMatrix(data = X_test,  label = y_test_id)
+
+watchlist <- list(train = dtrain, eval = dtest)
+
+params <- list(
+  objective        = "multi:softmax",
+  num_class        = num_class,
+  eval_metric      = "merror",
+  max_depth        = 6,
+  eta              = 0.1,
+  subsample        = 0.8,
+  colsample_bytree = 0.8
+)
+
+set.seed(123)
+bst <- xgb.train(
+  params  = params,
+  data    = dtrain,
+  nrounds = 400,               
+  watchlist = watchlist,
+  early_stopping_rounds = 20  
+)
+
+cat("Best iteration:", bst$best_iteration, "\n")
+
+
+
+pred_id <- predict(bst, dtest)   
+
+pred_fac <- factor(pred_id,
+                   levels = 0:(num_class - 1),
+                   labels = label_levels)
+
+acc <- mean(pred_fac == y_test_fac)
+cat("Test Accuracy (xgboost + emb + boro/zip/grade/type/lat/lon) =",
+    round(acc, 4), "\n", file="acc_overall.txt", append=F)
+
+raw_bytes <- xgb.save.raw(bst, raw_format = "ubj")
+saveRDS(raw_bytes, file = "xgb_model.rds")
+saveRDS(X_all,        file = "X_all.rds")
+saveRDS(train_idx,    file = "train_idx.rds")
+saveRDS(y_all,        file = "y_all.rds")
+saveRDS(label_levels, file = "label_levels.rds")
+saveRDS(dat2$CAMIS,   file = "CAMIS_all.rds")
+
+# after training bst, X_all, y_all, train_idx, dat2, etc.
+```
+```{r}
+train_counts   <- table(y_train_fac)
+train_majority <- names(which.max(train_counts))
+
+# 2. 看这个 majority class 在 TEST 里出现了多少次
+test_counts <- table(y_test_fac)
+majority_count_in_test <- as.numeric(test_counts[train_majority])
+null_acc <- majority_count_in_test / length(y_test_fac)
+xgb_acc <-  mean(pred_fac == y_test_fac)
+cat("Major cuisine in TRAIN set is:", train_majority, "\n",
+    file = "major.txt", append = FALSE)
+
+cat("Null Accuracy =", round(null_acc, 4), "\n",
+    file = "acc.txt", append = FALSE)
+
+cat("XGBoost Accuracy =", round(xgb_acc, 4), "\n",
+    file = "acc.txt", append = TRUE)
+```
+
+```{r}
+library(xgboost)
+library(pROC)
+dtest <- xgb.DMatrix(data = X_test)
+pred_prob_vec <- predict(
+  bst,
+  dtest,
+  outputmargin = FALSE
+)
+
+n_test <- length(y_test_fac)
+
+pred_prob <- matrix(
+  pred_prob_vec,
+  nrow = n_test,
+  ncol = num_class,
+  byrow = TRUE
+)
+
+colnames(pred_prob) <- label_levels
+
+top10 <- names(sort(table(y_test_fac), decreasing = TRUE))[1:10]
+
+par(mfrow = c(3, 4))
+
+for (lab in top10) {
+  j <- which(label_levels == lab)
+
+  response  <- as.numeric(y_test_fac == lab)
+  predictor <- pred_prob[, j]
+
+  roc_obj <- roc(response, predictor)
+
+  plot(
+    roc_obj,
+    main = paste("ROC -", lab,
+                 "AUC =", round(auc(roc_obj), 3)),
+    col = "blue",
+    lwd = 2
+  )
+
+  abline(a = 0, b = 1, lty = 2, col = "gray")
+}
+
+```
+
+
+```{r}
+library(xgboost)
+library(pROC)
+
+target <- "chinese" #make sure it is mixed
+
+y_bin <- as.numeric(y_all == target)
+y_bin_train <- y_bin[train_idx]
+y_bin_test  <- y_bin[-train_idx]
+
+dtrain_bin <- xgb.DMatrix(X_train, label = y_bin_train)
+dtest_bin  <- xgb.DMatrix(X_test,  label = y_bin_test)
+
+params_bin <- list(
+  objective   = "binary:logistic",
+  eval_metric = "auc",
+  max_depth   = 6,
+  eta         = 0.1,
+  subsample   = 0.8,
+  colsample_bytree = 0.8
+)
+
+bst_bin <- xgb.train(
+  params  = params_bin,
+  data    = dtrain_bin,
+  nrounds = 400,
+  watchlist = list(train = dtrain_bin, eval = dtest_bin),
+  early_stopping_rounds = 20
+)
+
+prob_test <- predict(bst_bin, dtest_bin)
+roc_obj   <- roc(response = y_bin_test, predictor = prob_test)
+auc(roc_obj)
+
+```
+

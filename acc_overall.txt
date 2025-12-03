@@ -1,0 +1,1 @@
+Test Accuracy (xgboost + emb + boro/zip/grade/type/lat/lon) = 0.5643 
