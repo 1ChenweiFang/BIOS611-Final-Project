@@ -310,7 +310,7 @@ saveRDS(dat2$CAMIS,   file = "CAMIS_all.rds")
 train_counts   <- table(y_train_fac)
 train_majority <- names(which.max(train_counts))
 
-# 2. 看这个 majority class 在 TEST 里出现了多少次
+
 test_counts <- table(y_test_fac)
 majority_count_in_test <- as.numeric(test_counts[train_majority])
 null_acc <- majority_count_in_test / length(y_test_fac)
