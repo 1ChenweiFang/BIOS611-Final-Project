@@ -7,3 +7,6 @@ To build the report.html, go to the makefile and go to the terminal. Run make re
 The whole project is organized in a makefile. We created each chunk in order to output the separate results we want inside the makefile. Finally we use Rscript to make sure that they run successfully.
 Embedding can be found here "https://colab.research.google.com/drive/1TUadh9cmyKGQwrI9rBd3hmLZI9wHFBe4"
 
+In order to knit the rmd file correclt, try to ramp the train dataset if it fails. Use the follwing format train_ii <- runif(nrow(X_train))<0.25
+X_train <- X_train[train_ii, ] in line 248 and same for the y_train_fac
+
